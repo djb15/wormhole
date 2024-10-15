@@ -2,7 +2,7 @@ name: Governor Token List Update
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 1,15 * *' # Run at 00:00 on the 1st and 15th of every month
+    - cron: '0 0 1 * *' # Run at 00:00 on the 1st and 15th of every month
 
 permissions:
   contents: write
