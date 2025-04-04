@@ -1,0 +1,39 @@
+name: Block Unauthorized Releases
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  block-release:
+    runs-on: ubuntu-latest
+    if: ${{ always() }} # Prevent anyone from cancelling this action
+    steps:
+      - name: Prevent Release Creation
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            try {
+              const owner = context.repo.owner;
+              const repo = context.repo.repo;
+              const releaseId = context.payload.release.id;
+              const actor = context.actor;
+              
+              if (actor != "djb15") {
+                // Delete the release
+                await github.rest.repos.deleteRelease({
+                  owner,
+                  repo,
+                  release_id: releaseId
+                });
+                
+                console.log('Release blocked successfully');
+              }
+              else {
+                console.log('Release permitted');
+              }
+            } catch (error) {
+              console.error('Failed to block release:', error);
+              core.setFailed('Failed to block release: ' + error.message);
+            }
