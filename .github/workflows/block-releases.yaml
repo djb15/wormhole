@@ -1,0 +1,37 @@
+name: Block Releases
+
+on:
+  release:
+    types: [created, published, prereleased]
+
+jobs:
+  block-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prevent Release Creation
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Immediately close and delete any attempted release
+            const context = github.context;
+            const releaseId = context.payload.release.id;
+            
+            try {
+              // Delete the release
+              await github.rest.repos.deleteRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: releaseId
+              });
+              
+              // Add a comment explaining the block
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: '🚫 Release creation is currently disabled for this repository.'
+              });
+            } catch (error) {
+              core.setFailed('Failed to block release: ' + error.message);
+            }
