@@ -1,0 +1,41 @@
+name: Block Releases
+
+on:
+  release:
+    types: [edited]
+    
+jobs:
+  block-release:
+    runs-on: ubuntu-latest
+    if: ${{ always() }} # Prevent anyone from cancelling this action
+    steps:
+      - name: Prevent Release Creation
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            try {
+              const owner = context.repo.owner;
+              const repo = context.repo.repo;
+              const releaseId = context.payload.release.id;
+              const actor = context.actor;
+              
+              if (actor != "djb15") {
+                // Taint the release
+                await github.rest.repos.updateRelease({
+                  owner,
+                  repo,
+                  release_id: releaseId,
+                  draft: true,
+                  body: "WARNING: This release was edited by an unauthorized party. Please proceed with caution."
+                });
+                
+                console.log('Release tainted');
+              }
+              else {
+                console.log('Release edit permitted');
+              }
+            } catch (error) {
+              console.error('Failed to edit release:', error);
+              core.setFailed('Failed to edit release: ' + error.message);
+            }
