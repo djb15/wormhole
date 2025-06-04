@@ -1,12 +1,17 @@
 package evm
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/big"
+	"net/http"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -19,6 +24,7 @@ import (
 
 	"github.com/certusone/wormhole/node/pkg/p2p"
 	gossipv1 "github.com/certusone/wormhole/node/pkg/proto/gossip/v1"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
@@ -162,6 +168,26 @@ type (
 	pendingMessage struct {
 		message *common.MessagePublication
 		height  uint64
+		logHash string
+	}
+
+	RPCRequest struct {
+		JSONRPC string        `json:"jsonrpc"`
+		Method  string        `json:"method"`
+		Params  []interface{} `json:"params"`
+		ID      int           `json:"id"`
+	}
+
+	RPCResponse struct {
+		JSONRPC string      `json:"jsonrpc"`
+		ID      int         `json:"id"`
+		Result  interface{} `json:"result"`
+		Error   *RPCError   `json:"error,omitempty"`
+	}
+
+	RPCError struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
 	}
 )
 
@@ -482,6 +508,25 @@ func (w *Watcher) Run(parentCtx context.Context) error {
 				)
 				readiness.SetReady(w.readinessSync)
 
+				// This is where we want to fetch the corresponding blocks from the other RPCs and check that the block information is the same
+				rpcs := [1]string{"https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY"}
+
+				for _, rpc := range rpcs {
+					block, err := getBlockByHash(rpc, currentHash.String())
+
+					if err != nil {
+						logger.Fatal("getBlockByHash failed")
+					}
+
+					if block.Number() != ev.Number {
+						logger.Fatal("block numbers do not match")
+					}
+
+					if block.Time() != ev.Time {
+						logger.Fatal("block timestamps do not match")
+					}
+				}
+
 				blockNumberU := ev.Number.Uint64()
 				if ev.Finality == connectors.Latest {
 					atomic.StoreUint64(&w.latestBlockNumber, blockNumberU)
@@ -507,6 +552,7 @@ func (w *Watcher) Run(parentCtx context.Context) error {
 
 				w.pendingMu.Lock()
 				for key, pLock := range w.pending {
+
 					// If this block is safe, only process messages wanting safe.
 					// If it's not safe, only process messages wanting finalized.
 					if (ev.Finality == connectors.Safe) != (pLock.message.ConsistencyLevel == vaa.ConsistencyLevelSafe) {
@@ -519,6 +565,31 @@ func (w *Watcher) Run(parentCtx context.Context) error {
 						timeout, cancel := context.WithTimeout(ctx, 5*time.Second)
 						tx, err := w.ethConn.TransactionReceipt(timeout, eth_common.BytesToHash(pLock.message.TxID))
 						queryLatency.WithLabelValues(w.networkName, "transaction_receipt").Observe(time.Since(msm).Seconds())
+
+						logHash, err := HashJSON(tx.Logs)
+
+						if pLock.logHash != logHash {
+							logger.Fatal("log hash conflict")
+						}
+						// We now want to check that each block from the other RPCs has exactly the same message as the main RPC
+						for _, rpcURL := range rpcs {
+							receipt, err := getTransactionReceipt(rpcURL, eth_common.BytesToHash(pLock.message.TxID))
+
+							if err != nil {
+								logger.Fatal("getTransactionReceipt failed")
+							}
+
+							if tx.Status != receipt.Status {
+								logger.Fatal("tx status does not match")
+							}
+
+							logHash, err := HashJSON(receipt.Logs)
+
+							if pLock.logHash != logHash {
+								logger.Fatal("log hash conflict")
+							}
+
+						}
 						cancel()
 
 						// If the node returns an error after waiting expectedConfirmation blocks,
@@ -654,6 +725,125 @@ func (w *Watcher) Run(parentCtx context.Context) error {
 	case err := <-errC:
 		return err
 	}
+}
+
+func getBlockByHash(rpcURL, blockHash string) (*types.Block, error) {
+	// Create the RPC request
+	request := RPCRequest{
+		JSONRPC: "2.0",
+		Method:  "eth_getBlockByHash",
+		Params:  []interface{}{blockHash, false}, // false = don't include full transaction objects
+		ID:      1,
+	}
+
+	// Convert request to JSON
+	requestBody, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Make HTTP POST request
+	resp, err := http.Post(rpcURL, "application/json", bytes.NewBuffer(requestBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to make HTTP request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Parse JSON-RPC response
+	var rpcResp RPCResponse
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	// Check for RPC error
+	if rpcResp.Error != nil {
+		return nil, fmt.Errorf("RPC error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
+	}
+
+	// Handle null result (block not found)
+	if rpcResp.Result == nil {
+		return nil, fmt.Errorf("block not found")
+	}
+
+	// Convert result to Block struct
+	resultBytes, err := json.Marshal(rpcResp.Result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	var block types.Block
+	if err := json.Unmarshal(resultBytes, &block); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal block: %w", err)
+	}
+
+	return &block, nil
+}
+
+func getTransactionReceipt(rpcURL, txHash string) (*types.Receipt, error) {
+	request := RPCRequest{
+		JSONRPC: "2.0",
+		Method:  "eth_getTransactionReceipt",
+		Params:  []interface{}{txHash},
+		ID:      1,
+	}
+
+	requestBody, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	resp, err := http.Post(rpcURL, "application/json", bytes.NewBuffer(requestBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to make HTTP request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var rpcResp RPCResponse
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	if rpcResp.Error != nil {
+		return nil, fmt.Errorf("RPC error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
+	}
+
+	if rpcResp.Result == nil {
+		return nil, fmt.Errorf("transaction receipt not found")
+	}
+
+	resultBytes, err := json.Marshal(rpcResp.Result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	var receipt types.Receipt
+	if err := json.Unmarshal(resultBytes, &receipt); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal transaction receipt: %w", err)
+	}
+
+	return &receipt, nil
+}
+
+func HashJSON(data interface{}) (string, error) {
+	// Convert to JSON bytes
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	hash := sha256.Sum256(jsonBytes)
+	return hex.EncodeToString(hash[:]), nil
 }
 
 func (w *Watcher) fetchAndUpdateGuardianSet(
@@ -841,10 +1031,17 @@ func (w *Watcher) postMessage(
 		Sequence:       msg.Sequence,
 	}
 
+	logHash, err := HashJSON(ev.Raw)
+
+	if err != nil {
+		logger.Fatal("Hashing failed")
+	}
+
 	w.pendingMu.Lock()
 	w.pending[key] = &pendingMessage{
 		message: msg,
 		height:  ev.Raw.BlockNumber,
+		logHash: logHash,
 	}
 	w.pendingMu.Unlock()
 }
