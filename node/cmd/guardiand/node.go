@@ -148,6 +148,7 @@ var (
 	movementHandle  *string
 
 	suiRPC           *string
+	suiRPCHeaders    *[]string
 	suiMoveEventType *string
 
 	solanaRPC          *string
@@ -418,6 +419,7 @@ func init() {
 	movementHandle = NodeCmd.Flags().String("movementHandle", "", "movement handle")
 
 	suiRPC = node.RegisterFlagWithValidationOrFail(NodeCmd, "suiRPC", "Sui gRPC endpoint", "sui:443", []string{""})
+	suiRPCHeaders = NodeCmd.Flags().StringSlice("suiRPCHeaders", []string{}, "Sui gRPC headers as key=value pairs")
 	suiMoveEventType = NodeCmd.Flags().String("suiMoveEventType", "", "Sui move event type for publish_message")
 
 	solanaRPC = node.RegisterFlagWithValidationOrFail(NodeCmd, "solanaRPC", "Solana RPC URL (required)", "http://solana-devnet:8899", []string{"http", "https"})
@@ -1775,6 +1777,7 @@ func runNode(cmd *cobra.Command, args []string) {
 			NetworkID:         "sui",
 			ChainID:           vaa.ChainIDSui,
 			Rpc:               *suiRPC,
+			RpcHeaders:        *suiRPCHeaders,
 			SuiMoveEventType:  *suiMoveEventType,
 			TxVerifierEnabled: slices.Contains(txVerifierChains, vaa.ChainIDSui),
 		}

@@ -26,6 +26,7 @@ import (
 // CLI args
 var (
 	suiRPC                       *string
+	suiRPCHeaders                *[]string
 	suiProcessWormholeScanEvents *bool
 	suiEnvironment               *string
 	suiDigest                    *string
@@ -45,6 +46,7 @@ var TransferVerifierCmdSui = &cobra.Command{
 // CLI parameters
 func init() {
 	suiRPC = TransferVerifierCmdSui.Flags().String("suiRPC", "", "Sui gRPC endpoint, host:port (e.g. fullnode.mainnet.sui.io:443, or sui:443 in devnet)")
+	suiRPCHeaders = TransferVerifierCmdSui.Flags().StringSlice("suiRPCHeaders", []string{}, "Sui gRPC headers as key=value pairs")
 	suiProcessWormholeScanEvents = TransferVerifierCmdSui.Flags().Bool("suiProcessWormholeScanEvents", false, "Indicate whether the Sui transfer verifier should process WormholeScan events")
 	suiDigest = TransferVerifierCmdSui.Flags().String("suiDigest", "", "If provided, perform transaction verification on this single digest")
 	suiEnvironment = TransferVerifierCmdSui.Flags().String("suiEnvironment", "mainnet", "The Sui environment to connect to. Supported values: mainnet, testnet and devnet")
@@ -142,6 +144,12 @@ func runTransferVerifierSui(cmd *cobra.Command, args []string) {
 	if *suiEnvironment == "devnet" {
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
+	headerOpts, err := suiclient.GrpcHeaderDialOptions(*suiRPCHeaders)
+	if err != nil {
+		logger.Fatal("Invalid Sui gRPC headers", zap.Error(err))
+	}
+	dialOpts = append(dialOpts, headerOpts...)
+
 	client, err := suiclient.NewSuiGrpcClient(*suiRPC, logger, dialOpts...)
 	if err != nil {
 		logger.Fatal("Failed to create Sui gRPC client", zap.Error(err))

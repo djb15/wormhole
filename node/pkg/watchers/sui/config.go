@@ -14,6 +14,7 @@ type WatcherConfig struct {
 	NetworkID         watchers.NetworkID // human readable name
 	ChainID           vaa.ChainID
 	Rpc               string
+	RpcHeaders        []string
 	SuiMoveEventType  string
 	TxVerifierEnabled bool
 }
@@ -39,6 +40,7 @@ func (wc *WatcherConfig) Create(
 
 	watcher, err := NewWatcher(
 		wc.Rpc,
+		wc.RpcHeaders,
 		wc.SuiMoveEventType,
 		devMode,
 		msgC,
