@@ -35,17 +35,24 @@ import (
 // suiGrpcDialOpts returns the gRPC dial options for connecting to the Sui endpoint. In unsafe
 // dev mode the local Sui node serves plaintext gRPC, so TLS is disabled; otherwise the default
 // (TLS) transport configured by suiclient.NewSuiGrpcClient is used.
-func suiGrpcDialOpts(unsafeDevMode bool) []grpc.DialOption {
-	if unsafeDevMode {
-		return []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+func suiGrpcDialOpts(unsafeDevMode bool, rpcHeaders []string) ([]grpc.DialOption, error) {
+	opts, err := suiclient.GrpcHeaderDialOptions(rpcHeaders)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+
+	if unsafeDevMode {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	return opts, nil
 }
 
 type (
 	// Watcher is responsible for looking over Sui blockchain and reporting new transactions to the wormhole contract
 	Watcher struct {
 		suiRPC           string
+		suiRPCHeaders    []string
 		suiMoveEventType string
 
 		unsafeDevMode bool
@@ -84,6 +91,7 @@ var (
 // NewWatcher creates a new Sui appid watcher
 func NewWatcher(
 	suiRPC string,
+	suiRPCHeaders []string,
 	suiMoveEventType string,
 	unsafeDevMode bool,
 	messageEvents chan<- *common.MessagePublication,
@@ -92,6 +100,11 @@ func NewWatcher(
 	txVerifierEnabled bool,
 ) (*Watcher, error) {
 	var suiTxVerifier *txverifier.SuiTransferVerifier
+
+	dialOpts, err := suiGrpcDialOpts(unsafeDevMode, suiRPCHeaders)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Sui gRPC headers: %w", err)
+	}
 
 	if txVerifierEnabled {
 
@@ -128,7 +141,7 @@ func NewWatcher(
 		}
 
 		// Create the Sui gRPC client used by the transfer verifier to query transactions and objects.
-		suiClient, err := suiclient.NewSuiGrpcClient(suiRPC, nil, suiGrpcDialOpts(unsafeDevMode)...)
+		suiClient, err := suiclient.NewSuiGrpcClient(suiRPC, nil, dialOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Sui gRPC client for transfer verifier: %w", err)
 		}
@@ -145,6 +158,7 @@ func NewWatcher(
 
 	return &Watcher{
 		suiRPC:            suiRPC,
+		suiRPCHeaders:     suiRPCHeaders,
 		suiMoveEventType:  suiMoveEventType,
 		unsafeDevMode:     unsafeDevMode,
 		msgChan:           messageEvents,
@@ -299,7 +313,12 @@ func (e *Watcher) Run(ctx context.Context) error {
 	// concurrent goroutines below cannot observe a closed or nil client during shutdown.
 	client := e.suiClient
 	if client == nil {
-		grpcClient, err := suiclient.NewSuiGrpcClient(e.suiRPC, logger, suiGrpcDialOpts(e.unsafeDevMode)...)
+		dialOpts, err := suiGrpcDialOpts(e.unsafeDevMode, e.suiRPCHeaders)
+		if err != nil {
+			return fmt.Errorf("invalid Sui gRPC headers: %w", err)
+		}
+
+		grpcClient, err := suiclient.NewSuiGrpcClient(e.suiRPC, logger, dialOpts...)
 		if err != nil {
 			return fmt.Errorf("failed to create Sui gRPC client: %w", err)
 		}

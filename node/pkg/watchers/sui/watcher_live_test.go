@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -39,12 +40,14 @@ import (
 //	SUI_WATCHER_RPC         gRPC endpoint host:port      (default fullnode.mainnet.sui.io:443)
 //	SUI_WATCHER_JSONRPC     JSON-RPC URL for cross-check (default https://fullnode.mainnet.sui.io)
 //	SUI_WATCHER_EVENT_TYPE  core bridge WormholeMessage  (default mainnet core bridge type)
+//	SUI_WATCHER_RPC_HEADERS comma-separated gRPC headers (key=value,key=value)
 //	SUI_WATCHER_SECONDS     how long to observe          (default 120)
 //	SUI_WATCHER_TXVERIFIER  set to any value to enable the transfer verifier
 func TestLiveSuiWatcher(t *testing.T) {
 	rpc := liveEnv("SUI_WATCHER_RPC", suiclient.SuiRPCMainnet)
 	jsonRPC := liveEnv("SUI_WATCHER_JSONRPC", "https://fullnode.mainnet.sui.io")
 	eventType := liveEnv("SUI_WATCHER_EVENT_TYPE", "0x5306f64e312b581766351c07af79c72fcb1cd25147157fdc2f8ad76de9a3fb6a::publish_message::WormholeMessage")
+	rpcHeaders := liveHeaderEnv("SUI_WATCHER_RPC_HEADERS")
 
 	seconds := 120
 	if s := os.Getenv("SUI_WATCHER_SECONDS"); s != "" {
@@ -61,6 +64,7 @@ func TestLiveSuiWatcher(t *testing.T) {
 		zap.String("rpc", rpc),
 		zap.String("jsonRPC", jsonRPC),
 		zap.String("eventType", eventType),
+		zap.Int("rpcHeaderCount", len(rpcHeaders)),
 		zap.Int("seconds", seconds),
 		zap.Bool("txVerifierEnabled", txVerifierEnabled),
 	)
@@ -69,7 +73,7 @@ func TestLiveSuiWatcher(t *testing.T) {
 	msgChan := make(chan *common.MessagePublication, 100)
 	obsvReqC := make(chan *gossipv1.ObservationRequest, 10)
 
-	watcher, err := NewWatcher(rpc, eventType, false, msgChan, obsvReqC, common.MainNet, txVerifierEnabled)
+	watcher, err := NewWatcher(rpc, rpcHeaders, eventType, false, msgChan, obsvReqC, common.MainNet, txVerifierEnabled)
 	require.NoError(t, err)
 
 	rootCtx, cancel := context.WithTimeout(context.Background(), time.Duration(seconds)*time.Second)
@@ -77,6 +81,7 @@ func TestLiveSuiWatcher(t *testing.T) {
 
 	observed := 0
 	verified := 0
+	watcherErrC := make(chan error, 1)
 	var wg sync.WaitGroup
 	wg.Add(1)
 
@@ -104,11 +109,17 @@ func TestLiveSuiWatcher(t *testing.T) {
 			}
 		}()
 
-		if rerr := supervisor.Run(ctx, "sui", watcher.Run); rerr != nil {
+		if rerr := watcher.Run(ctx); rerr != nil {
+			if !isContextError(rerr) {
+				select {
+				case watcherErrC <- rerr:
+				default:
+				}
+				cancel()
+			}
 			return rerr
 		}
 
-		<-ctx.Done()
 		return nil
 	}, supervisor.WithPropagatePanic)
 
@@ -116,6 +127,11 @@ func TestLiveSuiWatcher(t *testing.T) {
 	// Wait for the drain goroutine to finish any in-flight verification before the test returns,
 	// so it never calls t.Errorf after the test function has returned.
 	wg.Wait()
+	select {
+	case err := <-watcherErrC:
+		require.NoError(t, err)
+	default:
+	}
 	logger.Info("live Sui watcher finished", zap.Int("messagesObserved", observed), zap.Int("messagesVerified", verified))
 }
 
@@ -247,4 +263,26 @@ func liveEnv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func liveHeaderEnv(key string) []string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return nil
+	}
+
+	parts := strings.Split(v, ",")
+	headers := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			headers = append(headers, part)
+		}
+	}
+
+	return headers
+}
+
+func isContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
