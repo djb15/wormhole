@@ -1,6 +1,6 @@
 FROM cli-gen AS cli-export
 FROM const-gen AS const-export
-FROM mysten/sui-tools:testnet-v1.75.1@sha256:6034e740ce69398a7c7a272bdcd4cb87c6c12a104e5e7ede58463cd7035ebd04 AS sui
+FROM ghcr.io/wormhole-foundation/sui:1.63.2-testnet@sha256:1663379de7f58ffb5ca595235c7494e0b6e69a2953a08cab237e28601c33da4c AS sui
 
 # Install git (needed by Sui CLI for package resolution)
 RUN apt-get update && apt-get install -y git
@@ -34,7 +34,4 @@ FROM sui AS tests
 WORKDIR /tmp
 
 RUN apt-get update && apt-get install -y make
-
-RUN sui client new-env --alias testnet --rpc https://fullnode.testnet.sui.io:443 || true
-RUN sui client switch --env testnet
 RUN --mount=type=cache,target=/root/.move,id=move_cache make test
