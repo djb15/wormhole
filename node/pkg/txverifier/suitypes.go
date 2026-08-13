@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/big"
 	"regexp"
-	"strings"
 
 	"github.com/certusone/wormhole/node/pkg/suiclient"
 	"github.com/wormhole-foundation/wormhole/sdk/vaa"
@@ -117,6 +116,14 @@ type suiAssetInfo struct {
 	balance      *big.Int
 }
 
+// The fully-qualified `<module>::<Type>` names of the two token-registry asset value types,
+// exactly as they appear in the object type's asset-module capture group. These must be
+// compared for equality, never with substring checks.
+const (
+	suiNativeAssetType  = "native_asset::NativeAsset"
+	suiWrappedAssetType = "wrapped_asset::WrappedAsset"
+)
+
 // suiDynamicFieldTypeRegex matches a token-registry dynamic field object type of the form
 //
 //	0x...2::dynamic_field::Field<<pkg>::token_registry::Key<<coin>>,<pkg>::<asset>::<Asset><<coin>>>
@@ -127,17 +134,20 @@ type suiAssetInfo struct {
 // form and a trailing space.
 var suiDynamicFieldTypeRegex = regexp.MustCompile(`^0x0*2::dynamic_field::Field<([^:]+)::token_registry::Key<([^>]+)>,\s*([^:]+)::([^<]+)<([^>]+)>>$`)
 
-// validateSuiAssetType validates the type information of a token-registry dynamic field object.
-// The following checks are performed:
+// parseSuiAssetType validates the type information of a token-registry dynamic field object and
+// returns the validated asset value type ("native_asset::NativeAsset" or
+// "wrapped_asset::WrappedAsset"). The following checks are performed:
 //   - the type matches the token-registry dynamic field shape
 //   - the asset type is a wrapped or native token-bridge asset
 //   - both package IDs match the expected token bridge package ID
 //   - the coin type referenced by the field key matches the coin type of the asset value
-func validateSuiAssetType(objectType string, expectedPackageId string) bool {
+//
+// On any validation failure it returns ("", false).
+func parseSuiAssetType(objectType string, expectedPackageId string) (assetType string, ok bool) {
 	matches := suiDynamicFieldTypeRegex.FindStringSubmatch(objectType)
 
 	if len(matches) != 6 {
-		return false
+		return "", false
 	}
 
 	scanPackage1 := matches[1]
@@ -147,29 +157,29 @@ func validateSuiAssetType(objectType string, expectedPackageId string) bool {
 	scanCoinType2 := matches[5]
 
 	// Ensure that the asset type is wrapped or native
-	if scanAssetType != "wrapped_asset::WrappedAsset" && scanAssetType != "native_asset::NativeAsset" {
-		return false
+	if scanAssetType != suiWrappedAssetType && scanAssetType != suiNativeAssetType {
+		return "", false
 	}
 
 	// Ensure that the package IDs match the expected package ID
 	if scanPackage1 != expectedPackageId || scanPackage2 != expectedPackageId {
-		return false
+		return "", false
 	}
 
 	// Ensure that the coin types match
 	if scanCoinType1 != scanCoinType2 {
-		return false
+		return "", false
 	}
 
-	return true
+	return scanAssetType, true
 }
 
 // decodeSuiAssetObject decodes a token-registry dynamic field object's BCS contents into
-// normalized asset info. `objectType` is used to decide whether the field value is a native
-// or wrapped asset.
-func decodeSuiAssetObject(objectType string, contents []byte) (*suiAssetInfo, error) {
-	switch {
-	case strings.Contains(objectType, "wrapped_asset::WrappedAsset"):
+// normalized asset info. `assetType` selects the decode layout and must be a validated asset
+// type returned by parseSuiAssetType.
+func decodeSuiAssetObject(assetType string, contents []byte) (*suiAssetInfo, error) {
+	switch assetType {
+	case suiWrappedAssetType:
 		field, err := suiclient.DecodeBcs[suiWrappedAssetField](contents)
 		if err != nil {
 			return nil, fmt.Errorf("failed to BCS-decode WrappedAsset: %w", err)
@@ -188,7 +198,7 @@ func decodeSuiAssetObject(objectType string, contents []byte) (*suiAssetInfo, er
 			balance:      new(big.Int).SetUint64(field.Value.TreasuryCap.TotalSupply),
 		}, nil
 
-	case strings.Contains(objectType, "native_asset::NativeAsset"):
+	case suiNativeAssetType:
 		field, err := suiclient.DecodeBcs[suiNativeAssetField](contents)
 		if err != nil {
 			return nil, fmt.Errorf("failed to BCS-decode NativeAsset: %w", err)
@@ -203,6 +213,6 @@ func decodeSuiAssetObject(objectType string, contents []byte) (*suiAssetInfo, er
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("object type is neither a native nor wrapped token-bridge asset: %s", objectType)
+		return nil, fmt.Errorf("object type is neither a native nor wrapped token-bridge asset: %s", assetType)
 	}
 }

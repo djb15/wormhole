@@ -781,23 +781,48 @@ func TestDecodeSuiAssetObject(t *testing.T) {
 	addr := parseByteCSV("0,0,0,0,0,0,0,0,0,0,0,0,160,184,105,145,198,33,139,54,193,209,157,74,46,158,176,206,54,6,235,72")
 
 	// Unknown asset type -> error.
-	_, err := decodeSuiAssetObject("0x2::dynamic_field::Field<x::token_registry::Key<c>, y::other::Other<c>>", bcsNativeObject(1, addr, 8))
+	_, err := decodeSuiAssetObject("other::Other", bcsNativeObject(1, addr, 8))
 	assert.Error(t, err)
 
 	// Native type but undecodable (truncated) bytes -> error.
-	_, err = decodeSuiAssetObject("a::native_asset::NativeAsset<c>", []byte{0x01, 0x02})
+	_, err = decodeSuiAssetObject(suiNativeAssetType, []byte{0x01, 0x02})
 	assert.Error(t, err)
 
 	// Wrapped asset with an unknown token chain -> KnownChainIDFromNumber error.
-	_, err = decodeSuiAssetObject("a::wrapped_asset::WrappedAsset<c>", bcsWrappedObject(1, addr, 60000, 8))
+	_, err = decodeSuiAssetObject(suiWrappedAssetType, bcsWrappedObject(1, addr, 60000, 8))
 	assert.Error(t, err)
 
 	// Wrapped asset happy path.
-	info, err := decodeSuiAssetObject("a::wrapped_asset::WrappedAsset<c>", bcsWrappedObject(990, addr, 2, 8))
+	info, err := decodeSuiAssetObject(suiWrappedAssetType, bcsWrappedObject(990, addr, 2, 8))
 	assert.NoError(t, err)
 	assert.True(t, info.isWrapped)
 	assert.Equal(t, uint64(990), info.balance.Uint64())
 	assert.Equal(t, vaa.ChainIDEthereum, info.tokenChain)
+
+	// Native asset happy path.
+	info, err = decodeSuiAssetObject(suiNativeAssetType, bcsNativeObject(990, addr, 8))
+	assert.NoError(t, err)
+	assert.False(t, info.isWrapped)
+	assert.Equal(t, uint64(990), info.balance.Uint64())
+	assert.Equal(t, vaa.ChainIDSui, info.tokenChain)
+}
+
+func TestParseSuiAssetTypeConfusion(t *testing.T) {
+	const pkg = "0x26efee2b51c911237888e5dc6702868abca3c7ac12c53f76ef8eba0697695e3d"
+
+	// A native asset whose coin type is named to contain the `WrappedAsset` string.
+	coinType := "0xa77ac6e9c1a04ba3af88b6bd1a5b1a48ee0a6e9d5a4a4f4b1c2d3e4f5a6b7c8d::wrapped_asset::WrappedAsset"
+	objectType := fmt.Sprintf(
+		"0x0000000000000000000000000000000000000000000000000000000000000002::dynamic_field::Field<"+
+			"%s::token_registry::Key<%s>,%s::native_asset::NativeAsset<%s>>",
+		pkg, coinType, pkg, coinType)
+
+	assetType, ok := parseSuiAssetType(objectType, pkg)
+	assert.True(t, ok)
+	// The validated verdict must be native, even though the object type string contains the
+	// `WrappedAsset` string inside the coin type.
+	assert.Equal(t, suiNativeAssetType, assetType)
+	assert.Contains(t, objectType, suiWrappedAssetType)
 }
 
 // TestProcessDigestPublic exercises the public ProcessDigest wrapper, including its handling of
