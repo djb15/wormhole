@@ -2,6 +2,7 @@ package txverifier
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/big"
 	"regexp"
@@ -116,12 +117,13 @@ type suiAssetInfo struct {
 	balance      *big.Int
 }
 
-// The fully-qualified `<module>::<Type>` names of the two token-registry asset value types,
-// exactly as they appear in the object type's asset-module capture group. These must be
-// compared for equality, never with substring checks.
+// suiAssetType is the fully-qualified `<module>::<Type>` name of a token-registry asset value
+// type. Only the two constants below are valid values.
+type suiAssetType string
+
 const (
-	suiNativeAssetType  = "native_asset::NativeAsset"
-	suiWrappedAssetType = "wrapped_asset::WrappedAsset"
+	suiNativeAssetType  suiAssetType = "native_asset::NativeAsset"
+	suiWrappedAssetType suiAssetType = "wrapped_asset::WrappedAsset"
 )
 
 // suiDynamicFieldTypeRegex matches a token-registry dynamic field object type of the form
@@ -134,50 +136,53 @@ const (
 // form and a trailing space.
 var suiDynamicFieldTypeRegex = regexp.MustCompile(`^0x0*2::dynamic_field::Field<([^:]+)::token_registry::Key<([^>]+)>,\s*([^:]+)::([^<]+)<([^>]+)>>$`)
 
+// Errors identifying which parseSuiAssetType check rejected an object type.
+var (
+	errNotTokenRegistryField = errors.New("object type is not a token-registry dynamic field")
+	errNotAssetType          = errors.New("asset value type is not a native or wrapped token-bridge asset")
+	errWrongPackageId        = errors.New("package ID does not match the token bridge package ID")
+	errMismatchedCoinTypes   = errors.New("key coin type does not match the asset value coin type")
+)
+
 // parseSuiAssetType validates the type information of a token-registry dynamic field object and
-// returns the validated asset value type ("native_asset::NativeAsset" or
-// "wrapped_asset::WrappedAsset"). The following checks are performed:
+// returns the validated asset value type. The following checks are performed:
 //   - the type matches the token-registry dynamic field shape
 //   - the asset type is a wrapped or native token-bridge asset
 //   - both package IDs match the expected token bridge package ID
 //   - the coin type referenced by the field key matches the coin type of the asset value
 //
-// On any validation failure it returns ("", false).
-func parseSuiAssetType(objectType string, expectedPackageId string) (assetType string, ok bool) {
+// On validation failure it returns the sentinel error for the check that failed.
+func parseSuiAssetType(objectType string, expectedPackageId string) (suiAssetType, error) {
 	matches := suiDynamicFieldTypeRegex.FindStringSubmatch(objectType)
 
 	if len(matches) != 6 {
-		return "", false
+		return "", errNotTokenRegistryField
 	}
 
 	scanPackage1 := matches[1]
 	scanCoinType1 := matches[2]
 	scanPackage2 := matches[3]
-	scanAssetType := matches[4]
+	scanAssetType := suiAssetType(matches[4])
 	scanCoinType2 := matches[5]
 
-	// Ensure that the asset type is wrapped or native
 	if scanAssetType != suiWrappedAssetType && scanAssetType != suiNativeAssetType {
-		return "", false
+		return "", errNotAssetType
 	}
 
-	// Ensure that the package IDs match the expected package ID
 	if scanPackage1 != expectedPackageId || scanPackage2 != expectedPackageId {
-		return "", false
+		return "", errWrongPackageId
 	}
 
-	// Ensure that the coin types match
 	if scanCoinType1 != scanCoinType2 {
-		return "", false
+		return "", errMismatchedCoinTypes
 	}
 
-	return scanAssetType, true
+	return scanAssetType, nil
 }
 
 // decodeSuiAssetObject decodes a token-registry dynamic field object's BCS contents into
-// normalized asset info. `assetType` selects the decode layout and must be a validated asset
-// type returned by parseSuiAssetType.
-func decodeSuiAssetObject(assetType string, contents []byte) (*suiAssetInfo, error) {
+// normalized asset info. `assetType` selects the decode layout.
+func decodeSuiAssetObject(assetType suiAssetType, contents []byte) (*suiAssetInfo, error) {
 	switch assetType {
 	case suiWrappedAssetType:
 		field, err := suiclient.DecodeBcs[suiWrappedAssetField](contents)

@@ -155,8 +155,8 @@ func (s *SuiTransferVerifier) extractTransfersIntoBridgeFromObjectChanges(ctx co
 
 		// Check that the type information is correct and capture the validated asset type. Doing it
 		// here means it's not necessary to do it again after decoding the object contents.
-		assetType, ok := parseSuiAssetType(objectType, s.suiTokenBridgePackageId)
-		if !ok {
+		assetType, err := parseSuiAssetType(objectType, s.suiTokenBridgePackageId)
+		if err != nil {
 			continue
 		}
 
