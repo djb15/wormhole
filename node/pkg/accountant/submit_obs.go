@@ -97,7 +97,7 @@ func (acct *Accountant) handleBatch(ctx context.Context, subChan chan *common.Me
 		return fmt.Errorf("guardian index greater than max uint32 %v", guardianIndex)
 	}
 
-	batches, oversized := packObservationBatches(msgs, maxSubmitObservationsMsgSize)
+	batches, oversized := packObservationBatches(msgs, acct.submitObservationBatchSize, maxSubmitObservationsMsgSize)
 	if len(batches) > 1 {
 		acct.logger.Info(fmt.Sprintf("split observations for %s into multiple batches to stay within the transaction size limit", tag), zap.Int("numMsgs", len(msgs)), zap.Int("numBatches", len(batches)))
 		batchSizeSplits.Inc()
@@ -115,11 +115,12 @@ func (acct *Accountant) handleBatch(ctx context.Context, subChan chan *common.Me
 	return nil
 }
 
-// packObservationBatches partitions the messages into batches whose marshaled submit_observations messages each stay within
-// maxMsgSize. Each message is placed in the first batch with enough room for it, so a large message that does not fit in the
-// current batch is deferred to a later batch rather than failing the messages around it. A message too large to fit even in a
-// batch by itself is returned in oversized as well as being placed in its own batch.
-func packObservationBatches(msgs []*common.MessagePublication, maxMsgSize int) (batches [][]*common.MessagePublication, oversized []*common.MessagePublication) {
+// packObservationBatches partitions the messages into batches of at most maxBatchCount messages whose marshaled
+// submit_observations messages each stay within maxMsgSize. Each message is placed in the first batch with enough room for it,
+// so a large message that does not fit in the current batch is deferred to a later batch rather than failing the messages
+// around it. A message too large to fit even in a batch by itself is returned in oversized as well as being placed in its own
+// batch.
+func packObservationBatches(msgs []*common.MessagePublication, maxBatchCount int, maxMsgSize int) (batches [][]*common.MessagePublication, oversized []*common.MessagePublication) {
 	// batchSizes[i] is the size the marshaled observations array for batches[i] would have, including the enclosing brackets.
 	var batchSizes []int
 	for _, msg := range msgs {
@@ -127,7 +128,7 @@ func packObservationBatches(msgs []*common.MessagePublication, maxMsgSize int) (
 		placed := false
 		for idx := range batches {
 			// Adding an observation to a batch grows the observations array by the observation plus a separating comma.
-			if len(batches[idx]) < DefaultSubmitObservationBatchSize && submitObservationsMsgSize(batchSizes[idx]+obsSize+jsonCommaSize) <= maxMsgSize {
+			if len(batches[idx]) < maxBatchCount && submitObservationsMsgSize(batchSizes[idx]+obsSize+jsonCommaSize) <= maxMsgSize {
 				batches[idx] = append(batches[idx], msg)
 				batchSizes[idx] += obsSize + jsonCommaSize
 				placed = true

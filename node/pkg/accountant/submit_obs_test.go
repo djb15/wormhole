@@ -151,6 +151,9 @@ func TestPackObservationBatches(t *testing.T) {
 		name        string
 		payloadLens []int // One message per entry; the message's sequence number is its index.
 
+		// maxBatchCount is the batch count limit for the test. Zero means the default limit.
+		maxBatchCount int
+
 		// maxMsgSize returns the batch size limit for the test, given the test messages. Nil means the production limit.
 		maxMsgSize func(msgs []*common.MessagePublication) int
 
@@ -161,6 +164,11 @@ func TestPackObservationBatches(t *testing.T) {
 		minBatches   int
 	}{
 		{
+			name:        "returns no batches for no messages",
+			payloadLens: []int{},
+			expBatches:  [][]int{},
+		},
+		{
 			name:        "keeps small messages together in one batch",
 			payloadLens: repeatedPayloadLens(100, 100),
 			expBatches:  [][]int{indexRange(0, 100)},
@@ -169,6 +177,12 @@ func TestPackObservationBatches(t *testing.T) {
 			name:        "respects count limit",
 			payloadLens: repeatedPayloadLens(100, 205),
 			expBatches:  [][]int{indexRange(0, 100), indexRange(100, 200), indexRange(200, 205)},
+		},
+		{
+			name:          "respects configured count limit",
+			payloadLens:   repeatedPayloadLens(100, 5),
+			maxBatchCount: 2,
+			expBatches:    [][]int{{0, 1}, {2, 3}, {4}},
 		},
 		{
 			name:        "splits on size",
@@ -202,6 +216,10 @@ func TestPackObservationBatches(t *testing.T) {
 			for idx, payloadLen := range tc.payloadLens {
 				msgs[idx] = makeMsgForPackingTest(t, uint64(idx), payloadLen) // #nosec G115 -- test values are small
 			}
+			maxBatchCount := tc.maxBatchCount
+			if maxBatchCount == 0 {
+				maxBatchCount = DefaultSubmitObservationBatchSize
+			}
 			maxMsgSize := maxSubmitObservationsMsgSize
 			if tc.maxMsgSize != nil {
 				maxMsgSize = tc.maxMsgSize(msgs)
@@ -211,7 +229,7 @@ func TestPackObservationBatches(t *testing.T) {
 				expOversized = append(expOversized, msgs[idx])
 			}
 
-			batches, oversized := packObservationBatches(msgs, maxMsgSize)
+			batches, oversized := packObservationBatches(msgs, maxBatchCount, maxMsgSize)
 
 			assert.ElementsMatch(t, expOversized, oversized)
 			assert.GreaterOrEqual(t, len(batches), tc.minBatches)
@@ -221,7 +239,7 @@ func TestPackObservationBatches(t *testing.T) {
 			var packed []*common.MessagePublication
 			for _, batch := range batches {
 				require.NotEmpty(t, batch)
-				assert.LessOrEqual(t, len(batch), DefaultSubmitObservationBatchSize)
+				assert.LessOrEqual(t, len(batch), maxBatchCount)
 				if !slices.Contains(expOversized, batch[0]) {
 					assert.LessOrEqual(t, marshaledMsgSizeForBatch(t, batch), maxMsgSize)
 				} else {
