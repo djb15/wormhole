@@ -11,7 +11,7 @@ on:
       - "codeql/**"
       - ".github/workflows/codeql.yml"
   pull_request:
-    branches: [ main ]
+    branches: [ main, codeql ]
     paths:
       - "node/**"
       - "sdk/**/*.go"
