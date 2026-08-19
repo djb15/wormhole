@@ -11,7 +11,7 @@ on:
       - "codeql/**"
       - ".github/workflows/codeql.yml"
   pull_request:
-    branches: [ main, codeql ]
+    branches: [ main, node/governor-token-list-action ]
     paths:
       - "node/**"
       - "sdk/**/*.go"
