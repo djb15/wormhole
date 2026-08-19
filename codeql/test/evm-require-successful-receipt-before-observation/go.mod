@@ -1,3 +1,3 @@
 module codeql/evmrequiresuccessfulreceipt
 
-go 1.26
+go 1.22

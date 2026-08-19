@@ -1,3 +1,3 @@
 module codeql/algorandpublicationfieldlengthcheck
 
-go 1.26
+go 1.22
